@@ -1,8 +1,10 @@
 package com.ecommerce.product.controller;
 
-import com.ecommerce.product.entity.Product;
+import com.ecommerce.product.dto.ProductRequest;
+import com.ecommerce.product.dto.ProductResponse;
 import com.ecommerce.product.service.ProductService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -11,21 +13,61 @@ import java.util.List;
 @RequestMapping("/api/products")
 @RequiredArgsConstructor
 public class ProductController {
-    
+
     private final ProductService productService;
 
     @PostMapping
-    public Product createProduct(@RequestBody Product product) {
-        return productService.createProduct(product);
+    @ResponseStatus(HttpStatus.CREATED)
+    public ProductResponse createProduct(@RequestBody ProductRequest productRequest,
+            @RequestHeader(value = "X-User-Role", required = false) String role,
+            @RequestHeader(value = "X-User-Email", required = false) String email) {
+        validateMerchantRole(role);
+        productRequest.setVendorEmail(email); // Set the creator's email
+        return productService.createProduct(productRequest);
     }
 
     @GetMapping
-    public List<Product> getAllProducts() {
+    @ResponseStatus(HttpStatus.OK)
+    public List<ProductResponse> getAllProducts() {
         return productService.getAllProducts();
     }
 
+    @GetMapping("/vendor")
+    @ResponseStatus(HttpStatus.OK)
+    public List<ProductResponse> getProductsByVendor(
+            @RequestHeader(value = "X-User-Role", required = false) String role,
+            @RequestHeader(value = "X-User-Email", required = false) String email) {
+        validateMerchantRole(role);
+        return productService.getProductsByVendor(email);
+    }
+
     @GetMapping("/{id}")
-    public Product getProductById(@PathVariable Long id) {
+    @ResponseStatus(HttpStatus.OK)
+    public ProductResponse getProductById(@PathVariable Long id) {
         return productService.getProductById(id);
+    }
+
+    @PutMapping("/{id}")
+    @ResponseStatus(HttpStatus.OK)
+    public ProductResponse updateProduct(@PathVariable Long id, @RequestBody ProductRequest productRequest,
+            @RequestHeader(value = "X-User-Role", required = false) String role,
+            @RequestHeader(value = "X-User-Email", required = false) String email) {
+        validateMerchantRole(role);
+        return productService.updateProduct(id, productRequest, email);
+    }
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteProduct(@PathVariable Long id,
+            @RequestHeader(value = "X-User-Role", required = false) String role,
+            @RequestHeader(value = "X-User-Email", required = false) String email) {
+        validateMerchantRole(role);
+        productService.deleteProduct(id, email);
+    }
+
+    private void validateMerchantRole(String role) {
+        if (!"MERCHANT".equals(role)) {
+            throw new RuntimeException("Only merchants can perform this operation");
+        }
     }
 }
