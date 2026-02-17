@@ -2,6 +2,7 @@ package com.ecommerce.product.controller;
 
 import com.ecommerce.product.dto.ProductRequest;
 import com.ecommerce.product.dto.ProductResponse;
+import com.ecommerce.product.dto.CustomizationRequest;
 import com.ecommerce.product.service.ProductService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -63,6 +64,15 @@ public class ProductController {
             @RequestHeader(value = "X-User-Email", required = false) String email) {
         validateMerchantRole(role);
         productService.deleteProduct(id, email);
+    }
+
+    @PostMapping("/{id}/customization")
+    @ResponseStatus(HttpStatus.OK)
+    public void saveCustomization(@PathVariable Long id,
+            @RequestBody CustomizationRequest request,
+            @RequestHeader(value = "X-User-Id", required = false) String userId) {
+        productService.saveCustomerDesign(id, userId, request.getOriginalImage(), request.getEditedImage(),
+                request.getDesignInstructions());
     }
 
     private void validateMerchantRole(String role) {

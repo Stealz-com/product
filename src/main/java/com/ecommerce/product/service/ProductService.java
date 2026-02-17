@@ -3,8 +3,11 @@ package com.ecommerce.product.service;
 import com.ecommerce.product.dto.*;
 import com.ecommerce.product.entity.Product;
 import com.ecommerce.product.repository.ProductRepository;
+import com.ecommerce.product.exception.ResourceNotFoundException;
+import com.ecommerce.product.exception.UnauthorizedException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import io.micrometer.core.annotation.Timed;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -12,6 +15,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 @Service
@@ -20,10 +24,20 @@ import java.util.stream.Collectors;
 public class ProductService {
     private final ProductRepository productRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final FileStorageService fileStorageService;
 
     @CacheEvict(value = "products", allEntries = true)
     public ProductResponse createProduct(ProductRequest productRequest) {
         log.info("Creating product: {}", productRequest.getName());
+
+        String savedImageUrl = productRequest.getImageUrl();
+        if (productRequest.getImageUrl() != null && productRequest.getImageUrl().startsWith("data:image")) {
+            savedImageUrl = fileStorageService.saveMerchantImage(
+                    productRequest.getVendorEmail(),
+                    productRequest.getCategory().name(),
+                    productRequest.getName(),
+                    productRequest.getImageUrl());
+        }
 
         Product product = Product.builder()
                 .sku(productRequest.getSku())
@@ -31,7 +45,7 @@ public class ProductService {
                 .description(productRequest.getDescription())
                 .price(productRequest.getPrice())
                 .stockQuantity(productRequest.getStockQuantity())
-                .imageUrl(productRequest.getImageUrl())
+                .imageUrl(savedImageUrl)
                 .minPrice(productRequest.getMinPrice())
                 .vendorEmail(productRequest.getVendorEmail())
                 .category(productRequest.getCategory())
@@ -64,20 +78,26 @@ public class ProductService {
                 .collect(Collectors.toList());
     }
 
+    @Timed(value = "product.fetch.time", description = "Time taken to fetch product by ID")
     @Cacheable(value = "products", key = "#id")
     public ProductResponse getProductById(Long id) {
         log.info("Fetching product with id: {}", id);
         Product product = productRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Product not found with id: " + id));
+                .orElseThrow(() -> {
+                    log.error("Product fetch failed: ID {} not found", id);
+                    return new ResourceNotFoundException("Product not found with id: " + id);
+                });
 
-        // Track view
-        try {
-            kafkaTemplate.send("product-view-events",
-                    new ProductViewEvent(product.getId(), product.getSku(), product.getName(),
-                            System.currentTimeMillis()));
-        } catch (Exception e) {
-            log.warn("Failed to send product view event for id: {}", id, e);
-        }
+        // Track view asynchronously to reduce latency
+        CompletableFuture.runAsync(() -> {
+            try {
+                kafkaTemplate.send("product-view-events",
+                        new ProductViewEvent(product.getId(), product.getSku(), product.getName(),
+                                System.currentTimeMillis()));
+            } catch (Exception e) {
+                log.warn("Failed to send product view event for id: {}: {}", id, e.getMessage());
+            }
+        });
 
         return mapToProductResponse(product);
     }
@@ -87,11 +107,15 @@ public class ProductService {
     public ProductResponse updateProduct(Long id, ProductRequest productRequest, String requesterEmail) {
         log.info("Updating product with id: {} by {}", id, requesterEmail);
         Product product = productRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Product not found with id: " + id));
+                .orElseThrow(() -> {
+                    log.error("Product update failed: ID {} not found", id);
+                    return new ResourceNotFoundException("Product not found with id: " + id);
+                });
 
         // Ownership check
         if (!product.getVendorEmail().equals(requesterEmail)) {
-            throw new RuntimeException("You do not have permission to update this product");
+            log.warn("Unauthorized update attempt for product {} by user {}", id, requesterEmail);
+            throw new UnauthorizedException("You do not have permission to update this product");
         }
 
         product.setSku(productRequest.getSku());
@@ -117,11 +141,15 @@ public class ProductService {
     public void deleteProduct(Long id, String requesterEmail) {
         log.info("Deleting product with id: {} by {}", id, requesterEmail);
         Product product = productRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Product not found with id: " + id));
+                .orElseThrow(() -> {
+                    log.error("Product deletion failed: ID {} not found", id);
+                    return new ResourceNotFoundException("Product not found with id: " + id);
+                });
 
         // Ownership check
         if (!requesterEmail.equals(product.getVendorEmail())) {
-            throw new RuntimeException("You do not have permission to delete this product");
+            log.warn("Unauthorized deletion attempt for product {} by user {}", id, requesterEmail);
+            throw new UnauthorizedException("You do not have permission to delete this product");
         }
 
         productRepository.deleteById(id);
@@ -150,6 +178,18 @@ public class ProductService {
             log.info("Sent {} event for product: {}", eventType, product.getName());
         } catch (Exception e) {
             log.error("Failed to send product event for id: {}", product.getId(), e);
+        }
+    }
+
+    public void saveCustomerDesign(Long productId, String customerId, String originalBase64, String editedBase64,
+            String instructions) {
+        log.info("Saving customer design for product {} and customer {}. Instructions: {}", productId, customerId,
+                instructions);
+        if (originalBase64 != null) {
+            fileStorageService.saveCustomerDesign(customerId, productId, "original", originalBase64);
+        }
+        if (editedBase64 != null) {
+            fileStorageService.saveCustomerDesign(customerId, productId, "edited", editedBase64);
         }
     }
 
