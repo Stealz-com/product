@@ -30,14 +30,10 @@ public class ProductService {
     public ProductResponse createProduct(ProductRequest productRequest) {
         log.info("Creating product: {}", productRequest.getName());
 
-        String savedImageUrl = productRequest.getImageUrl();
-        if (productRequest.getImageUrl() != null && productRequest.getImageUrl().startsWith("data:image")) {
-            savedImageUrl = fileStorageService.saveMerchantImage(
-                    productRequest.getVendorEmail(),
-                    productRequest.getCategory().name(),
-                    productRequest.getName(),
-                    productRequest.getImageUrl());
-        }
+        String savedImageUrl = processImage(productRequest.getVendorEmail(),
+                productRequest.getCategory().name(),
+                productRequest.getName(),
+                productRequest.getImageUrl());
 
         Product product = Product.builder()
                 .sku(productRequest.getSku())
@@ -59,6 +55,13 @@ public class ProductService {
         sendProductEvent(savedProduct, "CREATE");
 
         return mapToProductResponse(savedProduct);
+    }
+
+    private String processImage(String vendorEmail, String category, String productName, String imageUrl) {
+        if (imageUrl != null && imageUrl.startsWith("data:image")) {
+            return fileStorageService.saveMerchantImage(vendorEmail, category, productName, imageUrl);
+        }
+        return imageUrl;
     }
 
     @Cacheable(value = "products")
@@ -118,12 +121,17 @@ public class ProductService {
             throw new UnauthorizedException("You do not have permission to update this product");
         }
 
+        String savedImageUrl = processImage(product.getVendorEmail(),
+                productRequest.getCategory().name(),
+                productRequest.getName(),
+                productRequest.getImageUrl());
+
         product.setSku(productRequest.getSku());
         product.setName(productRequest.getName());
         product.setDescription(productRequest.getDescription());
         product.setPrice(productRequest.getPrice());
         product.setStockQuantity(productRequest.getStockQuantity());
-        product.setImageUrl(productRequest.getImageUrl());
+        product.setImageUrl(savedImageUrl);
         product.setMinPrice(productRequest.getMinPrice());
         product.setCategory(productRequest.getCategory());
         product.setGender(productRequest.getGender());
